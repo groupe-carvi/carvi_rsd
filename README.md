@@ -1,2 +1,2 @@
-# gcrust_rs_driver
+# carvi_rsd
 A Rust wrapper for Robosense rs_driver
