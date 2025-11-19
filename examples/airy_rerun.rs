@@ -4,11 +4,21 @@ use rerun::external::glam;
 use std::time::Duration;
 
 fn main() -> Result<()> {
-    // Initialize Rerun
+    // Start a gRPC server and use it as log sink
     let rec = rerun::RecordingStreamBuilder::new("RoboSense Airy LiDAR")
-        .spawn()
-        .context("Failed to create Rerun recording stream")?;
+        .serve_grpc()
+        .context("Failed to start gRPC server")?;
 
+    // Connect the web viewer to the gRPC server and open it in the browser
+    #[cfg(feature = "web_viewer")]
+    let _server_guard = rerun::serve_web_viewer(rerun::web_viewer::WebViewerConfig {
+        connect_to: vec!["rerun+http://localhost/proxy".to_owned()],
+        ..Default::default()
+    })?;
+
+    #[cfg(not(feature = "web_viewer"))]
+    println!("Note: Enable 'web_viewer' feature to automatically open the web browser");
+    println!("Web viewer available at: http://localhost:9090 (or check console output)");
     println!("Initializing RoboSense Airy LiDAR driver...");
     
     // Create and configure the driver for Airy lidar
@@ -137,6 +147,10 @@ fn main() -> Result<()> {
 
     println!("Stopping driver...");
     driver.stop();
+    
+    // Keep server running a bit longer to ensure data is sent
+    println!("Waiting for data to be sent to web viewer...");
+    std::thread::sleep(Duration::from_secs(2));
     
     Ok(())
 }

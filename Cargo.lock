@@ -7566,8 +7566,10 @@ dependencies = [
  "re_tracing",
  "re_types",
  "re_uri",
+ "re_web_viewer_server",
  "thiserror 2.0.17",
  "tokio",
+ "webbrowser",
 ]
 
 [[package]]

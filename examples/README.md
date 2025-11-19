@@ -19,15 +19,17 @@ This example demonstrates how to capture point cloud data from a RoboSense Airy 
 
 ### Running the Example
 
-1. **Start the Rerun Viewer** (in a separate terminal):
-   ```bash
-   rerun
-   ```
+**Run the example**:
+```bash
+cargo run --example airy_rerun --features web_viewer
+```
 
-2. **Run the example**:
-   ```bash
-   cargo run --example airy_rerun
-   ```
+This will:
+1. Start a gRPC server for data streaming
+2. Automatically open a web browser with the Rerun viewer
+3. Begin streaming point cloud data from the Airy lidar
+
+If the web browser doesn't open automatically, navigate to the URL shown in the console output (typically `http://localhost:9090`).
 
 ### Configuration
 
