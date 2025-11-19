@@ -20,7 +20,7 @@ fn main() -> Result<()> {
     println!("Note: Enable 'web_viewer' feature to automatically open the web browser");
     println!("Web viewer available at: http://localhost:9090 (or check console output)");
     println!("Initializing RoboSense Airy LiDAR driver...");
-    
+
     // Create and configure the driver for Airy lidar
     let mut config = DriverConfig::new();
     config
@@ -31,26 +31,28 @@ fn main() -> Result<()> {
     // Configure input parameters
     {
         let mut input = config.input();
-        input.msop_port(6699);           // Default MSOP port for RoboSense
-        input.difop_port(7788);          // Default DIFOP port for RoboSense
-        input.host_address("0.0.0.0");   // Listen on all interfaces
-        input.group_address("0.0.0.0");  // No multicast
+        input.msop_port(6699); // Default MSOP port for RoboSense
+        input.difop_port(7788); // Default DIFOP port for RoboSense
+        input.host_address("0.0.0.0"); // Listen on all interfaces
+        input.group_address("0.0.0.0"); // No multicast
     }
 
     // Configure decoder parameters
     {
         let mut decoder = config.decoder();
-        decoder.min_distance(0.2);         // Minimum distance in meters
-        decoder.max_distance(200.0);       // Maximum distance in meters
-        decoder.use_lidar_clock(false);    // Use host clock
-        decoder.dense_points(false);       // Include invalid points
-        decoder.wait_for_difop(true);      // Wait for device info packet
+        decoder.min_distance(0.2); // Minimum distance in meters
+        decoder.max_distance(200.0); // Maximum distance in meters
+        decoder.use_lidar_clock(false); // Use host clock
+        decoder.dense_points(false); // Include invalid points
+        decoder.wait_for_difop(true); // Wait for device info packet
     }
 
     // Create and initialize the driver
     let mut driver = Driver::new().context("Failed to create driver")?;
-    driver.init(&config).context("Failed to initialize driver")?;
-    
+    driver
+        .init(&config)
+        .context("Failed to initialize driver")?;
+
     println!("Starting driver...");
     driver.start().context("Failed to start driver")?;
 
@@ -72,13 +74,13 @@ fn main() -> Result<()> {
     println!("View the data in Rerun Viewer");
 
     let mut frame_count = 0u64;
-    
+
     loop {
         // Poll for point cloud with 1 second timeout
         match driver.poll_point_cloud(Duration::from_secs(1)) {
             Ok(Some(cloud)) => {
                 frame_count += 1;
-                
+
                 println!(
                     "Frame {}: {} points, timestamp: {:.3}s, seq: {}",
                     frame_count,
@@ -116,9 +118,9 @@ fn main() -> Result<()> {
 
                     // Optionally log ring information as separate entities
                     // Group points by ring
-                    let mut rings: std::collections::HashMap<u16, Vec<glam::Vec3>> = 
+                    let mut rings: std::collections::HashMap<u16, Vec<glam::Vec3>> =
                         std::collections::HashMap::new();
-                    
+
                     for point in &cloud.points {
                         rings
                             .entry(point.ring)
@@ -147,10 +149,10 @@ fn main() -> Result<()> {
 
     println!("Stopping driver...");
     driver.stop();
-    
+
     // Keep server running a bit longer to ensure data is sent
     println!("Waiting for data to be sent to web viewer...");
     std::thread::sleep(Duration::from_secs(2));
-    
+
     Ok(())
 }

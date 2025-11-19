@@ -106,7 +106,7 @@ fn build_bindings(rs_driver_root: &Path) {
 
     // Get GCC system include paths to help clang find standard headers
     let gcc_include_output = Command::new("gcc")
-        .args(&["-E", "-Wp,-v", "-xc++", "/dev/null"])
+        .args(["-E", "-Wp,-v", "-xc++", "/dev/null"])
         .output()
         .ok();
 
@@ -140,6 +140,9 @@ fn build_bindings(rs_driver_root: &Path) {
 
     cc_builder
         .flag_if_supported("-std=c++17")
+        .flag_if_supported("-Wno-unused-parameter")
+        .flag_if_supported("-Wno-deprecated-copy")
+        .flag_if_supported("-Wno-missing-field-initializers")
         .compile("carvi_rsd_binding");
 
     println!("cargo:rerun-if-changed=src/bindings.rs");
