@@ -7,6 +7,15 @@ use std::{
 };
 use walkdir::WalkDir;
 
+#[cfg(all(target_os = "windows", feature = "npcap-sdk-download"))]
+use std::fs::File;
+
+#[cfg(all(target_os = "windows", feature = "npcap-sdk-download"))]
+use std::io::Write;
+
+#[cfg(all(target_os = "windows", feature = "npcap-sdk-download"))]
+use zip::ZipArchive;
+
 static PROJECT_ROOT: Lazy<PathBuf> = Lazy::new(|| {
     PathBuf::from(
         env::var("CARGO_MANIFEST_DIR")
@@ -17,6 +26,9 @@ static PROJECT_ROOT: Lazy<PathBuf> = Lazy::new(|| {
 static BUILD_FOLDER_PATH: Lazy<PathBuf> = Lazy::new(|| PROJECT_ROOT.join("builds"));
 
 static GEN_FOLDER_PATH: Lazy<PathBuf> = Lazy::new(|| PROJECT_ROOT.join("generated"));
+
+#[cfg(all(target_os = "windows", feature = "npcap-sdk-download"))]
+const NPCAP_SDK_DEFAULT_URL: &str = "https://npcap.com/dist/npcap-sdk-1.15.zip";
 
 const RS_DRIVER_REPOSITORY_URL: &str = "https://github.com/RoboSense-LiDAR/rs_driver.git";
 const RS_DRIVER_BRANCH_NAME: &str = "v1.5.18";
@@ -92,6 +104,8 @@ fn ensure_rs_driver_checkout() -> PathBuf {
 }
 
 fn build_bindings(rs_driver_root: &Path) {
+    let pcap_enabled = env::var("CARGO_FEATURE_PCAP").is_ok();
+
     let mut include_paths = vec![PROJECT_ROOT.join("src"), rs_driver_root.join("src")];
     include_paths.retain(|path| path.exists());
 
@@ -102,8 +116,6 @@ fn build_bindings(rs_driver_root: &Path) {
         );
     }
 
-    let include_refs: Vec<&Path> = include_paths.iter().map(|path| path.as_path()).collect();
-
     // Get GCC system include paths to help clang find standard headers
     let gcc_include_output = Command::new("gcc")
         .args(["-E", "-Wp,-v", "-xc++", "/dev/null"])
@@ -111,6 +123,12 @@ fn build_bindings(rs_driver_root: &Path) {
         .ok();
 
     let mut extra_args = vec!["-std=c++17".to_string()];
+
+    // If PCAP support is not requested, skip the PCAP-related headers entirely.
+    // rs_driver's `input_factory.hpp` uses this macro to avoid including `input_pcap*.hpp`.
+    if !pcap_enabled {
+        extra_args.push("-DDISABLE_PCAP_PARSE".to_string());
+    }
 
     if let Some(output) = gcc_include_output {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -123,6 +141,26 @@ fn build_bindings(rs_driver_root: &Path) {
         }
     }
 
+    // Add Npcap/WinPcap SDK paths for Windows (only when PCAP feature is enabled).
+    #[cfg(target_os = "windows")]
+    {
+        if pcap_enabled {
+            let sdk_root = find_or_fetch_npcap_sdk();
+            if let Some(sdk_root) = sdk_root {
+                let include_path = sdk_root.join("Include");
+                if include_path.exists() {
+                    println_build!("Using Npcap SDK at {}", sdk_root.display());
+                    extra_args.push(format!("-I{}", include_path.display()));
+                    include_paths.push(include_path);
+                }
+            }
+        }
+    }
+
+    // IMPORTANT: only borrow include_paths after we are done mutating it (Windows SDK detection
+    // may push additional include dirs).
+    let include_refs: Vec<&Path> = include_paths.iter().map(|path| path.as_path()).collect();
+
     let extra_args_refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
 
     let builder = autocxx_build::Builder::new("src/bindings.rs", &include_refs)
@@ -131,6 +169,10 @@ fn build_bindings(rs_driver_root: &Path) {
     let mut cc_builder = builder
         .build()
         .expect("Unable to generate bindings for rs_driver");
+
+    if !pcap_enabled {
+        cc_builder.define("DISABLE_PCAP_PARSE", None);
+    }
 
     for dir in &include_paths {
         cc_builder.include(dir);
@@ -151,17 +193,155 @@ fn build_bindings(rs_driver_root: &Path) {
 }
 
 fn emit_link_directives(_rs_driver_root: &Path) {
+    let pcap_enabled = env::var("CARGO_FEATURE_PCAP").is_ok();
+
     if cfg!(target_family = "unix") {
-        if let Err(err) = pkg_config::Config::new().probe("libpcap") {
-            println_build!(
-                "pkg-config was unable to locate libpcap ({err}). Falling back to generic linkage."
-            );
-            println!("cargo:rustc-link-lib=dylib=pcap");
+        if pcap_enabled {
+            if let Err(err) = pkg_config::Config::new().probe("libpcap") {
+                println_build!(
+                    "pkg-config was unable to locate libpcap ({err}). Falling back to generic linkage."
+                );
+                println!("cargo:rustc-link-lib=dylib=pcap");
+            }
         }
         println!("cargo:rustc-link-lib=dylib=pthread");
     } else if cfg!(target_family = "windows") {
         println!("cargo:rustc-link-lib=dylib=ws2_32");
+        
+        if pcap_enabled {
+            if let Some(sdk_root) = find_or_fetch_npcap_sdk() {
+                let lib_path_x64 = sdk_root.join("Lib/x64");
+                let lib_path = sdk_root.join("Lib");
+
+                if lib_path_x64.exists() {
+                    println!("cargo:rustc-link-search=native={}", lib_path_x64.display());
+                } else if lib_path.exists() {
+                    println!("cargo:rustc-link-search=native={}", lib_path.display());
+                }
+            }
+
+            // These import libraries come from the Npcap SDK.
+            println!("cargo:rustc-link-lib=dylib=wpcap");
+            println!("cargo:rustc-link-lib=dylib=Packet");
+        }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn find_or_fetch_npcap_sdk() -> Option<PathBuf> {
+    // 1) User-provided location(s)
+    let candidates = [
+        env::var("NPCAP_SDK").ok().map(PathBuf::from),
+        Some(PathBuf::from("C:/Program Files/Npcap SDK")),
+        Some(PathBuf::from("C:/npcap-sdk")),
+        env::var("WINPCAP_SDK").ok().map(PathBuf::from),
+        Some(BUILD_FOLDER_PATH.join("npcap-sdk")),
+    ];
+
+    for root in candidates.iter().flatten() {
+        if root.join("Include/pcap.h").exists() {
+            return Some(root.clone());
+        }
+    }
+
+    // 2) Optional auto-download of the SDK ZIP (headers + .lib import libs)
+    // NOTE: Npcap is not open source and has redistribution restrictions. We do NOT vendor it in
+    // this repository. Auto-download is opt-in and fetches directly from the upstream site.
+    // Default behavior:
+    // - if 'npcap-sdk-download' feature is enabled: auto-download by default
+    // - otherwise: do NOT auto-download unless explicitly requested
+    let auto = env::var("NPCAP_SDK_AUTO_DOWNLOAD")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(cfg!(feature = "npcap-sdk-download"));
+
+    if !auto {
+        println_build!(
+            "Npcap SDK not found. Set NPCAP_SDK to the SDK path, or enable the 'npcap-sdk-download' feature (or set NPCAP_SDK_AUTO_DOWNLOAD=1) to fetch it automatically."
+        );
+        return None;
+    }
+
+    // Auto-download requested.
+    #[cfg(feature = "npcap-sdk-download")]
+    {
+        let url = env::var("NPCAP_SDK_URL").unwrap_or_else(|_| NPCAP_SDK_DEFAULT_URL.to_string());
+        let sdk_root = BUILD_FOLDER_PATH.join("npcap-sdk");
+        if sdk_root.join("Include/pcap.h").exists() {
+            return Some(sdk_root);
+        }
+
+        if let Err(e) = download_and_extract_zip(&url, &sdk_root) {
+            panic!("Failed to auto-download Npcap SDK from {url}: {e}");
+        }
+
+        return sdk_root
+            .join("Include/pcap.h")
+            .exists()
+            .then_some(sdk_root);
+    }
+
+    #[cfg(not(feature = "npcap-sdk-download"))]
+    {
+        println_build!(
+            "Npcap SDK auto-download requested, but this build was compiled without the 'npcap-sdk-download' feature. Rebuild with --features pcap,npcap-sdk-download, or set NPCAP_SDK to an existing SDK install."
+        );
+        None
+    }
+}
+
+#[cfg(all(target_os = "windows", feature = "npcap-sdk-download"))]
+fn download_and_extract_zip(url: &str, dest_dir: &Path) -> Result<(), String> {
+    ensure_directory(dest_dir);
+
+    let zip_path = dest_dir.join("npcap-sdk.zip");
+
+    println_build!("Downloading Npcap SDK from {url} ...");
+    let resp = reqwest::blocking::Client::new()
+        .get(url)
+        .header(reqwest::header::USER_AGENT, "carvi_rsd build.rs")
+        .send()
+        .map_err(|e| format!("HTTP request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Download failed with status {}", resp.status()));
+    }
+
+    let bytes = resp
+        .bytes()
+        .map_err(|e| format!("Failed reading response body: {e}"))?;
+    let mut f = File::create(&zip_path).map_err(|e| format!("Create zip failed: {e}"))?;
+    f.write_all(&bytes)
+        .map_err(|e| format!("Write zip failed: {e}"))?;
+
+    println_build!("Extracting {} ...", zip_path.display());
+    let zip_file = File::open(&zip_path).map_err(|e| format!("Open zip failed: {e}"))?;
+    let mut archive = ZipArchive::new(zip_file).map_err(|e| format!("Invalid zip: {e}"))?;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(|e| format!("Zip read failed: {e}"))?;
+        let Some(relpath) = file.enclosed_name() else {
+            // Skip paths that attempt traversal
+            continue;
+        };
+
+        let relpath = relpath.to_owned();
+
+        let outpath = dest_dir.join(relpath);
+        if file.is_dir() {
+            ensure_directory(&outpath);
+            continue;
+        }
+
+        if let Some(parent) = outpath.parent() {
+            ensure_directory(parent);
+        }
+
+        let mut outfile = File::create(&outpath).map_err(|e| format!("Create file failed: {e}"))?;
+        std::io::copy(&mut file, &mut outfile).map_err(|e| format!("Extract failed: {e}"))?;
+    }
+
+    Ok(())
 }
 
 fn track_rs_driver_sources(rs_driver_root: &Path) {
