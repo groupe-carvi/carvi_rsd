@@ -23,7 +23,22 @@ static PROJECT_ROOT: Lazy<PathBuf> = Lazy::new(|| {
     )
 });
 
-static BUILD_FOLDER_PATH: Lazy<PathBuf> = Lazy::new(|| PROJECT_ROOT.join("builds"));
+static TARGET_DIR: Lazy<PathBuf> = Lazy::new(|| {
+    let target_dir = env::var("CARGO_TARGET_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PROJECT_ROOT.join("target"));
+
+    if target_dir.is_absolute() {
+        target_dir
+    } else {
+        PROJECT_ROOT.join(target_dir)
+    }
+});
+
+// A stable cache location for build-time vendored dependencies.
+// This is intentionally inside `target/` so it does not pollute the repository.
+static VENDOR_FOLDER_PATH: Lazy<PathBuf> = Lazy::new(|| TARGET_DIR.join("vendor"));
 
 static GEN_FOLDER_PATH: Lazy<PathBuf> = Lazy::new(|| PROJECT_ROOT.join("generated"));
 
@@ -39,7 +54,7 @@ const RS_DRIVER_BRANCH_ENV: &str = "RS_DRIVER_BRANCH";
 static RS_DRIVER_ROOT: Lazy<RwLock<PathBuf>> = Lazy::new(|| {
     let root = env::var(RS_DRIVER_ROOT_ENV)
         .map(PathBuf::from)
-        .unwrap_or_else(|_| BUILD_FOLDER_PATH.join("rs-driver"));
+        .unwrap_or_else(|_| VENDOR_FOLDER_PATH.join("rs-driver"));
     RwLock::new(root)
 });
 
@@ -55,7 +70,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed={}", RS_DRIVER_REPO_ENV);
     println!("cargo:rerun-if-env-changed={}", RS_DRIVER_BRANCH_ENV);
 
-    ensure_directory(&BUILD_FOLDER_PATH);
+    ensure_directory(&VENDOR_FOLDER_PATH);
     ensure_directory(&GEN_FOLDER_PATH);
 
     let rs_driver_root = ensure_rs_driver_checkout();
@@ -235,7 +250,7 @@ fn find_or_fetch_npcap_sdk() -> Option<PathBuf> {
         Some(PathBuf::from("C:/Program Files/Npcap SDK")),
         Some(PathBuf::from("C:/npcap-sdk")),
         env::var("WINPCAP_SDK").ok().map(PathBuf::from),
-        Some(BUILD_FOLDER_PATH.join("npcap-sdk")),
+        Some(VENDOR_FOLDER_PATH.join("npcap-sdk")),
     ];
 
     for root in candidates.iter().flatten() {
@@ -266,7 +281,7 @@ fn find_or_fetch_npcap_sdk() -> Option<PathBuf> {
     #[cfg(feature = "npcap-sdk-download")]
     {
         let url = env::var("NPCAP_SDK_URL").unwrap_or_else(|_| NPCAP_SDK_DEFAULT_URL.to_string());
-        let sdk_root = BUILD_FOLDER_PATH.join("npcap-sdk");
+        let sdk_root = VENDOR_FOLDER_PATH.join("npcap-sdk");
         if sdk_root.join("Include/pcap.h").exists() {
             return Some(sdk_root);
         }

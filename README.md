@@ -24,6 +24,8 @@ Building on Windows supports two modes:
 - **Without PCAP support (default)**: no Npcap SDK required.
 - **With PCAP support** (enable the `pcap` feature): requires the Npcap runtime + SDK.
 
+At build time, `rs_driver` is checked out into `target/vendor/rs-driver` by default (you can override this via `RS_DRIVER_CORE_ROOT`).
+
 To enable PCAP support, build with the `pcap` feature.
 
 1. Install the Npcap runtime: https://npcap.com/#download
@@ -67,6 +69,12 @@ If you see "pcap.h file not found", it means the SDK headers aren't being found.
 
 	```sh
 	cargo build --features pcap
+	```
+
+- Enable PCAP support and auto-download the Npcap SDK (download/extract cached under `target/vendor/npcap-sdk`):
+
+	```sh
+	cargo build --features pcap,npcap-sdk-download
 	```
 
 - PCAP support is **disabled by default**. To build without PCAP support, just build normally:
