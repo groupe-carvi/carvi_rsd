@@ -210,7 +210,7 @@ fn build_bindings(rs_driver_root: &Path) {
 fn emit_link_directives(_rs_driver_root: &Path) {
     let pcap_enabled = env::var("CARGO_FEATURE_PCAP").is_ok();
 
-    if cfg!(target_family = "unix") {
+    #[cfg(target_family = "unix")] {
         if pcap_enabled {
             if let Err(err) = pkg_config::Config::new().probe("libpcap") {
                 println_build!(
@@ -220,7 +220,8 @@ fn emit_link_directives(_rs_driver_root: &Path) {
             }
         }
         println!("cargo:rustc-link-lib=dylib=pthread");
-    } else if cfg!(target_family = "windows") {
+    } 
+    #[cfg(target_os = "windows")] {
         println!("cargo:rustc-link-lib=dylib=ws2_32");
         
         if pcap_enabled {
