@@ -131,13 +131,13 @@ fn build_bindings(rs_driver_root: &Path) {
         );
     }
 
-    // Get GCC system include paths to help clang find standard headers
-    let gcc_include_output = Command::new("gcc")
-        .args(["-E", "-Wp,-v", "-xc++", "/dev/null"])
-        .output()
-        .ok();
-
     let mut extra_args = vec!["-std=c++17".to_string()];
+
+    // Pass the explicit target triple so clang uses the correct pointer size and ABI.
+    // This is critical on Windows MSVC where clang otherwise defaults to 32-bit mode.
+    if let Ok(target) = env::var("TARGET") {
+        extra_args.push(format!("--target={}", target));
+    }
 
     // If PCAP support is not requested, skip the PCAP-related headers entirely.
     // rs_driver's `input_factory.hpp` uses this macro to avoid including `input_pcap*.hpp`.
@@ -145,14 +145,32 @@ fn build_bindings(rs_driver_root: &Path) {
         extra_args.push("-DDISABLE_PCAP_PARSE".to_string());
     }
 
-    if let Some(output) = gcc_include_output {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        for line in stderr.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with('/') && (trimmed.contains("include") || trimmed.contains("gcc"))
-            {
-                extra_args.push(format!("-I{}", trimmed));
+    // On Unix: get GCC system include paths to help clang find standard headers.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let gcc_include_output = Command::new("gcc")
+            .args(["-E", "-Wp,-v", "-xc++", "/dev/null"])
+            .output()
+            .ok();
+
+        if let Some(output) = gcc_include_output {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            for line in stderr.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with('/')
+                    && (trimmed.contains("include") || trimmed.contains("gcc"))
+                {
+                    extra_args.push(format!("-I{}", trimmed));
+                }
             }
+        }
+    }
+
+    // On Windows (MSVC): locate MSVC STL and Windows SDK headers so clang can find them.
+    #[cfg(target_os = "windows")]
+    {
+        for arg in find_msvc_include_paths() {
+            extra_args.push(arg);
         }
     }
 
@@ -436,4 +454,89 @@ fn clone_repository(repo_url: &str, dest_path: &Path, branch: Option<&str>) -> R
 
 fn get_rs_driver_root() -> PathBuf {
     RS_DRIVER_ROOT.read().unwrap().to_path_buf()
+}
+
+/// Locate MSVC STL and Windows SDK headers so that clang (used by autocxx-bindgen) can find
+/// standard C++ headers like `<algorithm>` on Windows.
+///
+/// Strategy:
+///   1. If `INCLUDE` is already populated (e.g. by vcvarsall.bat), use it directly.
+///   2. Otherwise fall back to `vswhere.exe` to discover the VS installation, then derive the
+///      MSVC and Windows SDK include directories from the standard on-disk layout.
+#[cfg(target_os = "windows")]
+fn find_msvc_include_paths() -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+
+    // 1) Prefer the INCLUDE env var set by vcvarsall.bat / Developer Command Prompt.
+    if let Ok(include_env) = env::var("INCLUDE") {
+        for path in include_env.split(';') {
+            let trimmed = path.trim();
+            if !trimmed.is_empty() {
+                args.push(format!("-I{}", trimmed));
+            }
+        }
+        if !args.is_empty() {
+            return args;
+        }
+    }
+
+    // 2) Use vswhere.exe to find the latest VS installation.
+    let vswhere = PathBuf::from(
+        r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe",
+    );
+    if !vswhere.exists() {
+        println_build!(
+            "vswhere.exe not found; MSVC standard headers may be unavailable for clang. \
+             Consider running from a Visual Studio Developer Command Prompt."
+        );
+        return args;
+    }
+
+    let vs_path = Command::new(&vswhere)
+        .args(["-latest", "-property", "installationPath"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| PathBuf::from(s.trim().to_string()));
+
+    let Some(vs_path) = vs_path else {
+        return args;
+    };
+
+    // 3) Find the latest MSVC toolchain under VC\Tools\MSVC.
+    let msvc_tools = vs_path.join(r"VC\Tools\MSVC");
+    if let Ok(entries) = fs::read_dir(&msvc_tools) {
+        if let Some(latest) = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .max()
+        {
+            let include_dir = msvc_tools.join(&latest).join("include");
+            if include_dir.exists() {
+                args.push(format!("-I{}", include_dir.display()));
+            }
+        }
+    }
+
+    // 4) Find the latest Windows 10 SDK and add ucrt, um, and shared sub-directories.
+    let sdk_include_root =
+        PathBuf::from(r"C:\Program Files (x86)\Windows Kits\10\Include");
+    if let Ok(entries) = fs::read_dir(&sdk_include_root) {
+        if let Some(sdk_version) = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .max()
+        {
+            for sub in &["ucrt", "um", "shared"] {
+                let dir = sdk_include_root.join(&sdk_version).join(sub);
+                if dir.exists() {
+                    args.push(format!("-I{}", dir.display()));
+                }
+            }
+        }
+    }
+
+    args
 }
