@@ -131,7 +131,9 @@ fn build_bindings(rs_driver_root: &Path) {
         );
     }
 
-    let mut extra_args = vec!["-std=c++17".to_string()];
+    // DeviceInfo::state is populated by rs_driver only when DIFOP parsing is
+    // enabled. Keep bindgen and the compiled C++ bridge on the same code path.
+    let mut extra_args = vec!["-std=c++17".to_string(), "-DENABLE_DIFOP_PARSE".to_string()];
 
     // Pass the explicit target triple so clang uses the correct pointer size and ABI.
     // This is critical on Windows MSVC where clang otherwise defaults to 32-bit mode.
@@ -206,6 +208,7 @@ fn build_bindings(rs_driver_root: &Path) {
     if !pcap_enabled {
         cc_builder.define("DISABLE_PCAP_PARSE", None);
     }
+    cc_builder.define("ENABLE_DIFOP_PARSE", None);
 
     for dir in &include_paths {
         cc_builder.include(dir);
