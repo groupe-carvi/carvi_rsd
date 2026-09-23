@@ -126,6 +126,17 @@ impl Driver {
         }
     }
 
+    /// Read the serial decoded from actual DIFOP device information. This
+    /// never derives identity from a configured listener or model.
+    pub fn get_device_serial(&mut self) -> Result<String> {
+        if !self.inner.pin_mut().read_device_serial() {
+            return Err(DriverError::new("RoboSense DIFOP serial unavailable"));
+        }
+        let serial = self.inner.device_serial().to_string_lossy().into_owned();
+        validate_device_serial(&serial)?;
+        Ok(serial)
+    }
+
     pub fn get_device_status(&mut self) -> Result<DeviceStatus> {
         let mut status = unsafe {
             let uninit: std::mem::MaybeUninit<DeviceStatus> = std::mem::MaybeUninit::uninit();
@@ -173,6 +184,31 @@ impl Driver {
             frame_id,
             points,
         }))
+    }
+}
+
+fn validate_device_serial(serial: &str) -> Result<()> {
+    if serial.len() != 12
+        || !serial
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || serial == "000000000000"
+    {
+        return Err(DriverError::new("RoboSense DIFOP serial invalid"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod serial_tests {
+    use super::validate_device_serial;
+
+    #[test]
+    fn difop_serial_must_be_nonzero_canonical_hex() {
+        assert!(validate_device_serial("010203040506").is_ok());
+        for invalid in ["", "000000000000", "010203", "01020304050G", "01020304050g"] {
+            assert!(validate_device_serial(invalid).is_err(), "{invalid}");
+        }
     }
 }
 

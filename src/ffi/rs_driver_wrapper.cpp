@@ -222,6 +222,38 @@ bool Driver::get_device_info(robosense::lidar::DeviceInfo& info)
   return impl_->driver_.getDeviceInfo(info);
 }
 
+bool Driver::read_device_serial()
+{
+  device_serial_.clear();
+  robosense::lidar::DeviceInfo info{};
+  if (!impl_->driver_.getDeviceInfo(info))
+  {
+    return false;
+  }
+  bool nonzero = false;
+  for (uint8_t byte : info.sn)
+  {
+    nonzero |= byte != 0;
+  }
+  if (!nonzero)
+  {
+    return false;
+  }
+  constexpr char hex[] = "0123456789abcdef";
+  device_serial_.reserve(12);
+  for (uint8_t byte : info.sn)
+  {
+    device_serial_.push_back(hex[byte >> 4]);
+    device_serial_.push_back(hex[byte & 0x0f]);
+  }
+  return true;
+}
+
+const std::string& Driver::device_serial() const
+{
+  return device_serial_;
+}
+
 bool Driver::get_device_status(robosense::lidar::DeviceStatus& status)
 {
   return impl_->driver_.getDeviceStatus(status);

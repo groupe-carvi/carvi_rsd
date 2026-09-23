@@ -84,11 +84,16 @@ public:
   bool poll_point_cloud(uint64_t timeout_ms, PointCloudBuffer& out);
   bool get_temperature(float& temp);
   bool get_device_info(robosense::lidar::DeviceInfo& info);
+  // Copies only the actual DIFOP serial; false means no usable serial was
+  // observed. The listener address or configured model is never substituted.
+  bool read_device_serial();
+  const std::string& device_serial() const;
   bool get_device_status(robosense::lidar::DeviceStatus& status);
 
 private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
+  std::string device_serial_;
 };
 
 std::unique_ptr<Driver> driver_create();
