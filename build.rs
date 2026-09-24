@@ -147,24 +147,12 @@ fn build_bindings(rs_driver_root: &Path) {
         extra_args.push("-DDISABLE_PCAP_PARSE".to_string());
     }
 
-    // On Unix: get GCC system include paths to help clang find standard headers.
+    // On Unix, bindgen must see the same target C++ headers as the object
+    // compiler. Host gcc paths silently poison an aarch64 cross build.
     #[cfg(not(target_os = "windows"))]
     {
-        let gcc_include_output = Command::new("gcc")
-            .args(["-E", "-Wp,-v", "-xc++", "/dev/null"])
-            .output()
-            .ok();
-
-        if let Some(output) = gcc_include_output {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            for line in stderr.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with('/')
-                    && (trimmed.contains("include") || trimmed.contains("gcc"))
-                {
-                    extra_args.push(format!("-I{}", trimmed));
-                }
-            }
+        for path in target_cxx_include_paths() {
+            extra_args.push(format!("-I{}", path.display()));
         }
     }
 
@@ -226,6 +214,69 @@ fn build_bindings(rs_driver_root: &Path) {
     println!("cargo:rerun-if-changed=src/bindings.rs");
     println!("cargo:rerun-if-changed=src/ffi/rs_driver_wrapper.hpp");
     println!("cargo:rerun-if-changed=src/ffi/rs_driver_wrapper.cpp");
+}
+
+#[cfg(not(target_os = "windows"))]
+fn target_cxx_include_paths() -> Vec<PathBuf> {
+    let target = env::var("TARGET").expect("Cargo TARGET is required for C++ bindings");
+    let host = env::var("HOST").expect("Cargo HOST is required for C++ bindings");
+    let cross = target != host;
+    let target_key = format!("CXX_{}", target.replace('-', "_"));
+    println!("cargo:rerun-if-env-changed={target_key}");
+    println!("cargo:rerun-if-env-changed=CXX");
+
+    let compiler = env::var(&target_key).unwrap_or_else(|_| {
+        if !cross {
+            env::var("CXX").unwrap_or_else(|_| "g++".into())
+        } else if target == "aarch64-unknown-linux-gnu" {
+            "aarch64-linux-gnu-g++".into()
+        } else {
+            panic!("set {target_key} to the target C++ compiler for cross target {target}");
+        }
+    });
+    let output = Command::new(&compiler)
+        .args(["-E", "-Wp,-v", "-xc++", "/dev/null"])
+        .output()
+        .unwrap_or_else(|error| panic!("cannot query target C++ compiler {compiler}: {error}"));
+    if !output.status.success() {
+        panic!(
+            "target C++ compiler {compiler} could not list include paths: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let target_arch = target.split('-').next().unwrap_or_default();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut search_list = false;
+    let mut include_paths = Vec::new();
+    for line in stderr.lines() {
+        if line.contains("#include <...> search starts here:") {
+            search_list = true;
+            continue;
+        }
+        if line.contains("End of search list.") {
+            break;
+        }
+        if !search_list {
+            continue;
+        }
+        let path = line.trim();
+        if !path.starts_with('/') || (cross && !path.contains(target_arch)) {
+            continue;
+        }
+        let path = PathBuf::from(path);
+        if path.is_dir() && !include_paths.contains(&path) {
+            include_paths.push(path);
+        }
+    }
+    if include_paths.is_empty() {
+        panic!("no target C++ include paths found from {compiler} for {target}");
+    }
+    println_build!(
+        "Using {} target C++ include paths from {compiler} for {target}",
+        include_paths.len()
+    );
+    include_paths
 }
 
 fn emit_link_directives(_rs_driver_root: &Path) {
